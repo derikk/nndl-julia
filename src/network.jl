@@ -22,9 +22,8 @@ input labeled as `self` rather than as a field of `self` (e.g. `self.SGD`)
 struct Network
 	num_layers::Int
 	sizes::Vector{Int}
-	biases
-	weights
-	#TODO More type annotation
+	biases::Vector{Vector{Real}}
+	weights::Vector{Matrix{Real}}
 
 	# Original docstrings and comments have been left in place.
 	"""The list `sizes` contains the number of neurons in the
@@ -68,7 +67,7 @@ function SGD(self::Network, training_data, epochs::Int,
 	if test_data != nothing n_test = length(test_data) end
 	n = length(training_data)
 	for j in 1:epochs
-		shuffle!(training_data) # Is it OK to shuffle in place?
+		shuffle!(training_data) # Shuffle an index vector instead?
 		mini_batches = [training_data[k:k+mini_batch_size-1]
 		  for k in 1:mini_batch_size:n-mini_batch_size]
 
