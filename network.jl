@@ -8,15 +8,9 @@ using backpropagation. Note that I have focused on making the code
 simple, easily readable, and easily modifiable. It is not optimized,
 and omits many desirable features.
 
-Original Python version: Copyright © 2012-2020 Michael Nielsen
-Rewritten Julia version: Copyright © 2018-2020 Derik Kauffman
+Original Python code: Copyright © 2012-2022 Michael Nielsen
+Julia reimplementation: Copyright © 2018-2022 Derik Kauffman
 Licensed under MIT license
-=#
-
-#= In Julia, functions do not "belong" to any particular class.
-Therefore, the functions implemented here take a Network struct
-as input labeled as `net` rather than as a field of `self`
-(e.g. `SGD!(net, …)` vs. `self.SGD!(…)`)
 =#
 
 using Random
@@ -28,7 +22,7 @@ struct Network
 end
 
 """
-    Network(sizes::Integer)
+	Network(sizes::Vector{<:Integer})
 
 The list `sizes` contains the number of neurons in the
 respective layers of the network. For example, if the list
@@ -36,7 +30,7 @@ was [2, 3, 1] then it would be a three-layer network, with the
 first layer containing 2 neurons, the second layer 3 neurons,
 and the third layer 1 neuron. The biases and weights for the
 network are initialized randomly, using a Gaussian
-distribution with mean 0, and variance 1. Note that the first
+distribution with mean 0 and variance 1. Note that the first
 layer is assumed to be an input layer, and by convention we
 won't set any biases for those neurons, since biases are only
 ever used in computing the outputs from later layers.
@@ -48,38 +42,44 @@ function Network(sizes::Vector{<:Integer})
 end
 
 """
-	feedforward(net::Network, a::Vector{<:Number})
+	feedforward(net::Network, a::AbstractVector{<:Real})
 
 Return the output of the network if `a` is input.
 """
-function feedforward(net::Network, a::Vector{<:Number})
+function feedforward(net::Network, a::AbstractVector{<:Real})
 	for (b, w) = zip(net.biases, net.weights)
 		a = σ.(w * a .+ b)
 	end
 	return a
 end
 
+"""
+The neural network's output is assumed to be the index of whichever
+neuron in the final layer has the highest activation.
+"""
+classify(net::Network, a::AbstractVector{<:Real}) = argmax(feedforward(net, a)) - 1
 
-"""Train the neural network using mini-batch stochastic gradient
+"""
+Train the neural network using mini-batch stochastic gradient
 descent. The `training_data` is a list of tuples `(x, y)`
 representing the training inputs and the desired outputs.
 The other non-optional parameters are self-explanatory.
 If `test_data` is provided then the network will be evaluated
 against the test data after each epoch, and partial progress
 printed out. This is useful for tracking progress, but slows things
-down substantially."""
+down substantially.
+"""
 function SGD!(net::Network, training_data, epochs::Integer,
-		mini_batch_size::Integer, η::Number; test_data=nothing)
-	if test_data != nothing n_test = length(test_data) end
-	n = length(training_data)
+	  mini_batch_size::Integer, η::Real; test_data=nothing)
+	if test_data !== nothing n_test = length(test_data) end
 	for j in 1:epochs
 		shuffle!(training_data)
-		mini_batches = [training_data[k:k+mini_batch_size-1]
-		  for k in 1:mini_batch_size:n-mini_batch_size]
-		for mini_batch in mini_batches
+		mini_batches = reshape(training_data, :, mini_batch_size)
+		for mini_batch in eachrow(mini_batches)
 			update_mini_batch!(net, mini_batch, η)
 		end
-		if test_data != nothing
+
+		if test_data !== nothing
 			println("Epoch $j: $(evaluate(net, test_data)) / $n_test")
 		else
 			println("Epoch $j complete")
@@ -88,14 +88,14 @@ function SGD!(net::Network, training_data, epochs::Integer,
 end
 
 """
-    update_mini_batch!(net::Network, mini_batch, η::Number)
+	update_mini_batch!(net::Network, mini_batch, η::Real)
 
 Update the network's weights and biases by applying
 gradient descent using backpropagation to a single mini batch.
 The `mini_batch` is a list of tuples `(x, y)`, and `η`
 is the learning rate.
 """
-function update_mini_batch!(net::Network, mini_batch, η::Number)
+function update_mini_batch!(net::Network, mini_batch, η::Real)
 	∇b = zero.(net.biases)
 	∇w = zero.(net.weights)
 	for (x, y) in mini_batch
@@ -103,8 +103,8 @@ function update_mini_batch!(net::Network, mini_batch, η::Number)
 		∇b .+= Δ∇b
 		∇w .+= Δ∇w
 	end
-	net.weights .-= η * ∇w/length(mini_batch) # Eq. 20
-	net.biases  .-= η * ∇b/length(mini_batch) # Eq. 21
+	net.biases  .-= Float32(η / length(mini_batch)) .* ∇b # Eq. 21
+	net.weights .-= Float32(η / length(mini_batch)) .* ∇w # Eq. 20
 end
 
 """
@@ -130,34 +130,27 @@ function backprop(net::Network, x, y)
 	end
 
 	# backward pass
-	δ = cost_derivative(activations[end], y) .* σ′.(zs[end])
+	δ = cost_derivative(activations[end], y) .* σ′.(zs[end]) # Eq. BP1
 	∇b[end] = δ
 	∇w[end] = δ * activations[end-1]'
-	# Note that the variable l in the loop below is used a little
-	# differently to the notation in Chapter 2 of the book. Here,
-	# l = 1 means the last layer of neurons, l = 2 is the
-	# second-last layer, and so on.
-	for l in 2:length(net.sizes)-1
-		z = zs[end-l+1]
-		sp = σ′.(z)
-		δ = (net.weights[end-l+2]' * δ) .* sp
-		∇b[end-l+1] = δ
-		∇w[end-l+1] = δ * activations[end-l]'
+
+	for l in length(net.sizes)-1:2
+		z = zs[l]
+		δ = (net.weights[l+1]' * δ) .* σ′.(z) # Eq. BP2
+		∇b[l] = δ # Eq. BP3
+		∇w[l] = δ * activations[l-1]' # Eq. BP4
 	end
-	return (∇b, ∇w)
+	return ∇b, ∇w
 end
 
 """
 	evaluate(net::Network, test_data)
 
 Return the number of test inputs for which the neural
-network outputs the correct result. Note that the neural
-network's output is assumed to be the index of whichever
-neuron in the final layer has the highest activation.
+network outputs the correct result.
 """
 function evaluate(net::Network, test_data)
-	test_results = [(argmax(feedforward(net, x)) - 1, y) for (x, y) in test_data]
-	return count((x==y) for (x,y) in test_results)
+	return count((classify(net, x) == y) for (x, y) in test_data)
 end
 
 """
@@ -165,15 +158,13 @@ end
 
 Return the vector of partial derivatives ∂Cₓ/∂a for the output activations.
 """
-function cost_derivative(output_activations, y)
-	return output_activations .- onehot(y)
-end
+cost_derivative(output_activations, y) = output_activations .- onehot(y)
 
 #### Miscellaneous functions
-# The sigmoid function.
+"""The sigmoid function."""
 σ(z) = 1/(1 + exp(-z))
 
-# Derivative of the sigmoid function.
+"""Derivative of the sigmoid function."""
 σ′(z) = σ(z) * (1 - σ(z))
 
 """
@@ -193,27 +184,27 @@ end
 using MLDatasets
 
 function load_data()
-	training_inputs = reshape(MNIST.traintensor(Float32), (784, :))
-	training_results = MNIST.trainlabels()
-	training_data = [(training_inputs[:, i], training_results[i]) for i in 1:50000]
-	validation_data = [(training_inputs[:, i], training_results[i]) for i in 50001:60000]
-	test_inputs = reshape(MNIST.testtensor(Float32), (784, :))
-	test_results = MNIST.testlabels()
-	test_data = [(test_vectors[:, i], test_labels[i]) for i in 1:10000]
+	training_inputs = reshape(MNIST.traintensor(Float32), 784, :)
+	training_labels = MNIST.trainlabels()
+	training_data = zip(eachcol(training_inputs), training_labels)
+
+	test_inputs = reshape(MNIST.testtensor(Float32), 784, :)
+	test_labels = MNIST.testlabels()
+	test_data = zip(eachcol(test_inputs), test_labels)
 	println("Loaded data")
-    return (training_data, validation_data, test_data)
+	return training_data, test_data
 end
 
 function test_mnist()
-    training_data, validation_data, test_data = load_data()
-    net = Network([784,30,10])
-    SGD!(net, training_data, 30, 10, 0.1, test_data=test_data)
-    return net
+	training_data, test_data = load_data()
+	net = Network([784, 30, 10])
+	SGD!(net, training_data, 30, 10, 0.1, test_data=test_data)
+	return net
 end
 
 function test_mnist_quick()
-    training_data, validation_data, test_data = load_data()
-    net = Network([784,10])
-    SGD!(net, training_data, 5, 10, 3.0, test_data=test_data)
-    return net
+	training_data, test_data = load_data()
+	net = Network([784, 10])
+	SGD!(net, training_data, 5, 10, 3.0, test_data=test_data)
+	return net
 end
